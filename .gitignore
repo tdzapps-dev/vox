@@ -1,0 +1,15 @@
+# Build artifacts
+.build/
+build/
+*.app
+DerivedData/
+
+# Packaging
+*.zip
+
+# Windows port (untested — kept local, not part of the public release)
+windows/
+
+# Logs / OS cruft
+*.log
+.DS_Store
