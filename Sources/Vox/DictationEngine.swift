@@ -22,6 +22,13 @@ final class DictationEngine {
     private var modelTask: Task<Void, Error>?
     private var modelTaskLocaleID: String?
 
+    // Each press gets a fresh token. If the key is released (or pressed again)
+    // while a session is still spinning up — e.g. a model is still downloading —
+    // the token changes and the in-flight setup aborts cleanly instead of
+    // orphaning the engine in a stuck state.
+    private var sessionToken = 0
+    private var preparing = false
+
     private func setState(_ newState: State) {
         state = newState
         onStateChange?(newState)
@@ -30,8 +37,12 @@ final class DictationEngine {
     // MARK: - Start
 
     func startListening() async throws {
-        guard state == .idle else { return }
+        guard state == .idle, !preparing else { return }
+        let token = sessionToken &+ 1
+        sessionToken = token
+        preparing = true
         finalizedText = ""
+        defer { preparing = false }
 
         // Model is normally pre-downloaded at launch; this is fast if so.
         do {
@@ -40,6 +51,8 @@ final class DictationEngine {
             invalidateModel() // allow a retry on the next press
             throw error
         }
+        // Released (or re-pressed) while the model was downloading? Abort.
+        guard sessionToken == token else { return }
 
         let transcriber = SpeechTranscriber(
             locale: locale,
@@ -47,12 +60,12 @@ final class DictationEngine {
             reportingOptions: [.volatileResults],
             attributeOptions: []
         )
-        self.transcriber = transcriber
-
         let analyzer = SpeechAnalyzer(modules: [transcriber])
-        self.analyzer = analyzer
-
         let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
+        guard sessionToken == token else { return }
+
+        self.transcriber = transcriber
+        self.analyzer = analyzer
 
         // Drain transcription results, keeping only finalized text.
         resultsTask = Task { [weak self] in
@@ -71,9 +84,30 @@ final class DictationEngine {
         inputBuilder = builder
 
         try await analyzer.start(inputSequence: stream)
+        guard sessionToken == token else {
+            await teardown()
+            return
+        }
 
         try startAudioCapture(analyzerFormat: analyzerFormat)
         setState(.listening)
+    }
+
+    /// Cleanly tears the analyzer/stream/audio down without producing a result.
+    /// Used when a session is aborted mid-setup.
+    private func teardown() async {
+        if audioEngine.isRunning {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
+        }
+        inputBuilder?.finish()
+        inputBuilder = nil
+        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+        resultsTask?.cancel()
+        resultsTask = nil
+        analyzer = nil
+        transcriber = nil
+        if state != .listening { setState(.idle) }
     }
 
     private func appendFinalized(_ chunk: String) {
@@ -126,6 +160,12 @@ final class DictationEngine {
 
     @discardableResult
     func stopAndTranscribe() async -> String {
+        // Released while still spinning up (e.g. model downloading): invalidate
+        // the in-flight session so it aborts, and produce nothing.
+        if preparing {
+            sessionToken &+= 1
+            return ""
+        }
         guard state == .listening else { return "" }
         setState(.transcribing)
 
@@ -141,8 +181,9 @@ final class DictationEngine {
             // Best-effort; whatever was finalized stands.
         }
 
-        // Let the results stream drain its final segments.
-        await resultsTask?.value
+        // Drain the final segments — but never hang in .transcribing.
+        await drainResults(timeout: 6)
+        resultsTask?.cancel()
         resultsTask = nil
 
         let text = finalizedText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -151,6 +192,17 @@ final class DictationEngine {
         transcriber = nil
         setState(.idle)
         return text
+    }
+
+    /// Awaits the results task, but gives up after `timeout` seconds so a
+    /// misbehaving stream can't leave the UI stuck transcribing forever.
+    private func drainResults(timeout seconds: Double) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in await self?.resultsTask?.value }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+            _ = await group.next()
+            group.cancelAll()
+        }
     }
 
     // MARK: - Model assets
