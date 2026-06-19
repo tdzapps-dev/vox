@@ -7,8 +7,12 @@ DerivedData/
 # Packaging
 *.zip
 
-# Windows port (untested — kept local, not part of the public release)
-windows/
+# Windows port — publish the source, ignore local runtime/build artifacts
+windows/.venv/
+windows/.venv-test/
+windows/__pycache__/
+windows/dist/
+windows/*.spec
 
 # Logs / OS cruft
 *.log

@@ -1,16 +1,20 @@
 # Vox 🎙️
 
-**Free, on-device voice dictation for macOS.** Hold a key, talk, release — your
-words appear wherever the cursor is (terminal, editor, browser, any text field).
+**Free, on-device voice dictation.** Hold a key, talk, release — your words
+appear wherever the cursor is (terminal, editor, browser, any text field).
 
-Everything runs **locally** using macOS 26's on-device `SpeechAnalyzer`. No audio
-ever leaves your Mac, no API keys, no subscription, no cloud.
+Everything runs **locally**. No audio ever leaves your machine, no API keys, no
+subscription, no cloud.
 
-> Built as a free, private alternative to cloud dictation tools. Tiny, focused,
-> native.
+- **macOS** — native menu-bar app using Apple's on-device `SpeechAnalyzer` (macOS 26).
+- **Windows** — Python port using local Whisper (`faster-whisper`). See [`windows/`](windows/).
+
+> A free, private alternative to cloud dictation tools. Tiny and focused.
 
 <!-- Add a short screen recording here and it sells itself:
 ![demo](docs/demo.gif) -->
+
+> The sections below cover the **macOS** app. For Windows, see [`windows/README.md`](windows/README.md).
 
 ## Features
 
@@ -31,7 +35,7 @@ ever leaves your Mac, no API keys, no subscription, no cloud.
 ### Build from source
 
 ```bash
-git clone <your-repo-url> vox
+git clone https://github.com/tdzapps-dev/vox.git
 cd vox
 ./scripts/make-app.sh          # builds build/Vox.app (release)
 cp -R build/Vox.app /Applications/
@@ -96,11 +100,18 @@ Source layout:
 | `TextInjector.swift` | Pasteboard + synthetic `⌘V` |
 | `Permissions.swift` | Mic / speech / accessibility |
 
+## Windows
+
+A Python port lives in [`windows/`](windows/) — same idea (hold a key, speak,
+release, paste anywhere), running Whisper locally via `faster-whisper`. It runs
+from the system tray and is installed with a couple of `.bat` scripts. Full
+instructions in [`windows/README.md`](windows/README.md).
+
 ## Roadmap
 
 - Configurable hotkey from the UI (currently a one-line code change).
 - Double-tap-to-lock for hands-free long-form dictation.
-- Optional punctuation / cleanup pass.
+- Better punctuation (commas in particular) and an optional cleanup pass.
 
 PRs welcome.
 

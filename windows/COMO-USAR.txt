@@ -1,0 +1,94 @@
+============================================================
+  VOX  -  ditado por voz pro seu PC
+============================================================
+
+O que é:
+  Voce segura uma tecla, fala, e solta. O que voce falou
+  vira texto e aparece escrito onde o cursor estiver
+  (no chat, no navegador, em qualquer campo de texto).
+
+  Funciona 100% no seu computador: nada do que voce fala
+  sai da maquina, nao precisa de internet pra transcrever,
+  e nao tem mensalidade.
+
+
+============================================================
+  PARTE 1 - INSTALAR (so na primeira vez, ~5 min)
+============================================================
+
+PASSO 1 - Instalar o Python
+  - Abra:  https://www.python.org/downloads/
+  - Clique no botao amarelo "Download Python".
+  - Abra o arquivo baixado.
+  - >>> MUITO IMPORTANTE <<<
+    Na primeira tela, MARQUE a caixinha embaixo escrita
+    "Add Python to PATH". Depois clique em "Install Now".
+  - Espere terminar e feche.
+
+PASSO 2 - Preparar o Vox
+  - Coloque esta pasta num lugar fixo (ex: Documentos).
+  - De 2 cliques no arquivo  setup.bat
+  - Vai abrir uma janela preta escrevendo coisas. So espere.
+    (Ele instala o necessario e baixa a "voz" uma vez.)
+  - Quando aparecer "Pronto!", pode fechar a janela.
+
+  Obs: se o Windows mostrar um aviso azul de seguranca,
+  clique em "Mais informacoes" e depois "Executar assim mesmo".
+
+
+============================================================
+  PARTE 2 - USAR (todo dia)
+============================================================
+
+PASSO 1 - Abrir
+  - De 2 cliques em  run.bat
+  - Vai aparecer um iconezinho de microfone perto do
+    relogio do Windows (canto de baixo a direita).
+    Esse e o Vox ligado.
+
+PASSO 2 - Ditar
+  - Clique no lugar onde voce quer escrever.
+  - SEGURE a tecla  Ctrl da DIREITA  do teclado.
+  - Fale normalmente enquanto segura.
+  - SOLTE a tecla.
+  - Em 1-2 segundos o texto aparece escrito sozinho.
+
+  Dica: fale uma frase de cada vez. Segurou, falou, soltou.
+
+
+============================================================
+  AJUSTES
+============================================================
+
+- Trocar idioma (Portugues / English):
+  Clique com o botao DIREITO no icone do microfone
+  (perto do relogio) e escolha o idioma.
+
+- Fechar o programa:
+  Botao direito no icone do microfone  ->  "Sair".
+
+- Abrir sozinho quando ligar o PC (opcional):
+  Aperte as teclas  Windows + R , digite  shell:startup
+  e de Enter. Arraste um atalho do run.bat pra dentro
+  da pasta que abriu.
+
+
+============================================================
+  SE DER ALGUM PROBLEMA
+============================================================
+
+- Nao aparece o icone / nada acontece quando aperto:
+  De 2 cliques em  run-debug.bat  (em vez do run.bat).
+  Vai abrir uma janela preta mostrando o erro.
+  Tira um print dessa janela e manda pro Bruno.
+
+- O texto nao cola num programa especifico:
+  Esse programa pode estar aberto "como administrador".
+  Feche e abra ele normal, ou peça ajuda ao Bruno.
+
+- Demora muito pra transcrever:
+  Manda mensagem pro Bruno que ele deixa mais rapido.
+
+------------------------------------------------------------
+  Qualquer duvida, chama o Bruno. Bom uso! 🎙️
+------------------------------------------------------------
