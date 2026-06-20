@@ -83,14 +83,18 @@ final class DictationEngine {
         let (stream, builder) = AsyncStream<AnalyzerInput>.makeStream()
         inputBuilder = builder
 
-        try await analyzer.start(inputSequence: stream)
-        guard sessionToken == token else {
+        let started = await withTimeout(6) { try? await analyzer.start(inputSequence: stream) }
+        guard sessionToken == token else { await teardown(); return }
+        guard started else {
+            Log.write("eng: analyzer.start timed out")
             await teardown()
-            return
+            throw NSError(domain: "Vox", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "Motor de fala demorou demais para iniciar."])
         }
 
         try startAudioCapture(analyzerFormat: analyzerFormat)
         setState(.listening)
+        Log.write("eng: listening")
     }
 
     /// Cleanly tears the analyzer/stream/audio down without producing a result.
@@ -102,10 +106,11 @@ final class DictationEngine {
         }
         inputBuilder?.finish()
         inputBuilder = nil
-        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+        let analyzer = self.analyzer
+        _ = await withTimeout(3) { try? await analyzer?.finalizeAndFinishThroughEndOfInput() }
         resultsTask?.cancel()
         resultsTask = nil
-        analyzer = nil
+        self.analyzer = nil
         transcriber = nil
         if state != .listening { setState(.idle) }
     }
@@ -175,34 +180,56 @@ final class DictationEngine {
         inputBuilder?.finish()
         inputBuilder = nil
 
-        do {
-            try await analyzer?.finalizeAndFinishThroughEndOfInput()
-        } catch {
-            // Best-effort; whatever was finalized stands.
+        // The speech service can wedge after heavy use — never let finalize or
+        // result-draining hang forever. Time-box both; keep whatever we have.
+        let analyzer = self.analyzer
+        let finalized = await withTimeout(4) {
+            try? await analyzer?.finalizeAndFinishThroughEndOfInput()
         }
+        if !finalized { Log.write("eng: finalize timed out") }
 
-        // Drain the final segments — but never hang in .transcribing.
-        await drainResults(timeout: 6)
+        let drained = await withTimeout(4) { [weak self] in await self?.resultsTask?.value }
+        if !drained { Log.write("eng: drain timed out") }
         resultsTask?.cancel()
         resultsTask = nil
 
         let text = finalizedText.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        analyzer = nil
+        self.analyzer = nil
         transcriber = nil
         setState(.idle)
         return text
     }
 
-    /// Awaits the results task, but gives up after `timeout` seconds so a
-    /// misbehaving stream can't leave the UI stuck transcribing forever.
-    private func drainResults(timeout seconds: Double) async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { [weak self] in await self?.resultsTask?.value }
-            group.addTask { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
-            _ = await group.next()
+    /// Runs `op`, returning true if it completed within `seconds`, false on
+    /// timeout. A timed-out op is abandoned (it can't block anything further).
+    private func withTimeout(_ seconds: Double, _ op: @escaping () async -> Void) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await op(); return true }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)); return false }
+            let finished = await group.next() ?? false
             group.cancelAll()
+            return finished
         }
+    }
+
+    /// Hard reset — used when an operation times out so the next session starts
+    /// from a clean slate even if the previous one wedged.
+    func forceReset() {
+        Log.write("eng: forceReset")
+        sessionToken &+= 1
+        preparing = false
+        if audioEngine.isRunning {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
+        }
+        inputBuilder?.finish()
+        inputBuilder = nil
+        resultsTask?.cancel()
+        resultsTask = nil
+        analyzer = nil
+        transcriber = nil
+        setState(.idle)
     }
 
     // MARK: - Model assets
