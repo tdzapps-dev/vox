@@ -8,9 +8,10 @@ final class MenuBarController {
     private let hotkey = HotKeyMonitor()
     private var accessibilityWatcher: Timer?
     private var lastTrusted = false
-    // Serializes start/stop so overlapping or rapid press/release cycles can't
-    // race each other into a corrupted (0-char / stuck) session.
-    private var opChain: Task<Void, Never> = Task { @MainActor in }
+    // Dictation is driven off the physical key state, reconciled by a single
+    // loop — never separate queued press/release ops that can desync and wedge.
+    private var keyDown = false
+    private var reconciling = false
 
     private let languages: [(title: String, identifier: String)] = [
         ("Português (Brasil)", "pt-BR"),
@@ -33,8 +34,8 @@ final class MenuBarController {
         let ax = Permissions.accessibilityTrusted(prompt: true)
         Log.write("launch: mic=\(mic) speech=\(speech) accessibility=\(ax)")
 
-        hotkey.onPress = { [weak self] in self?.beginDictation() }
-        hotkey.onRelease = { [weak self] in self?.endDictation() }
+        hotkey.onPress = { [weak self] in self?.setKeyDown(true) }
+        hotkey.onRelease = { [weak self] in self?.setKeyDown(false) }
 
         // Pre-download the speech model now so the first dictation is instant.
         engine.prepareModel()
@@ -72,39 +73,37 @@ final class MenuBarController {
 
     // MARK: - Dictation flow
 
-    /// Appends an operation to the serial chain so press/release are always
-    /// processed strictly in order — never overlapping.
-    private func enqueue(_ op: @MainActor @escaping () async -> Void) {
-        let previous = opChain
-        opChain = Task { @MainActor in
-            await previous.value
-            await op()
-        }
+    /// Records the physical key state and kicks the reconciler. Key held =
+    /// should be recording; key up = should be stopped + transcribed.
+    private func setKeyDown(_ down: Bool) {
+        Log.write(down ? "key down" : "key up")
+        keyDown = down
+        reconcile()
     }
 
-    private func beginDictation() {
-        Log.write("press")
-        enqueue { [weak self] in
-            guard let self else { return }
-            do {
-                try await self.engine.startListening()
-            } catch {
-                Log.write("startListening error: \(error.localizedDescription)")
-                self.updateIcon(.idle)
-                NSSound.beep()
-            }
-        }
-    }
-
-    private func endDictation() {
-        enqueue { [weak self] in
-            guard let self else { return }
-            let text = await self.engine.stopAndTranscribe()
-            Log.write("release → \(text.count) chars")
-            if text.isEmpty {
-                NSSound.beep()
-            } else {
-                TextInjector.insert(text)
+    /// A single loop that drives the engine toward the desired state implied by
+    /// `keyDown`, re-checking after every step. Because there's only ever one
+    /// loop (the `reconciling` guard) and it re-reads `keyDown` each pass, no
+    /// amount of fast mashing can leave it stuck or overlapping.
+    private func reconcile() {
+        guard !reconciling else { return }
+        reconciling = true
+        Task { @MainActor in
+            defer { reconciling = false }
+            while true {
+                let want = keyDown
+                let state = engine.state
+                if want && state == .idle {
+                    do { try await engine.startListening() }
+                    catch { Log.write("start error: \(error.localizedDescription)") }
+                    if engine.state != .listening { break } // start aborted/failed — don't spin
+                } else if !want && state != .idle {
+                    let text = await engine.stopAndTranscribe()
+                    Log.write("release → \(text.count) chars")
+                    if text.isEmpty { NSSound.beep() } else { TextInjector.insert(text) }
+                } else {
+                    break // engine already matches the desired state
+                }
             }
         }
     }
