@@ -6,8 +6,11 @@ final class MenuBarController {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let engine = DictationEngine()
     private let hotkey = HotKeyMonitor()
-    private var isBusy = false
     private var accessibilityWatcher: Timer?
+    private var lastTrusted = false
+    // Serializes start/stop so overlapping or rapid press/release cycles can't
+    // race each other into a corrupted (0-char / stuck) session.
+    private var opChain: Task<Void, Never> = Task { @MainActor in }
 
     private let languages: [(title: String, identifier: String)] = [
         ("Português (Brasil)", "pt-BR"),
@@ -33,54 +36,71 @@ final class MenuBarController {
         hotkey.onPress = { [weak self] in self?.beginDictation() }
         hotkey.onRelease = { [weak self] in self?.endDictation() }
 
-        let armed = hotkey.start()
-        Log.write("hotkey armed=\(armed)")
-        if !armed {
-            // Accessibility not granted yet. Watch for it and arm the hotkey
-            // the moment it's granted — no app restart required.
-            startAccessibilityWatch()
-        }
-
         // Pre-download the speech model now so the first dictation is instant.
         engine.prepareModel()
+
+        // Persistent watchdog: arms the hotkey, re-arms it if macOS ever revokes
+        // and restores Accessibility mid-session, and logs every transition so
+        // we can see exactly when/if the grant drops.
+        startAccessibilityWatchdog()
         buildMenu()
     }
 
-    private func startAccessibilityWatch() {
+    private func startAccessibilityWatchdog() {
         accessibilityWatcher?.invalidate()
-        accessibilityWatcher = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                guard Permissions.accessibilityTrusted(prompt: false), self.hotkey.start() else { return }
-                self.accessibilityWatcher?.invalidate()
-                self.accessibilityWatcher = nil
-                self.buildMenu()
-            }
+        accessibilityWatcher = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkAccessibility() }
         }
+        checkAccessibility()
+    }
+
+    private func checkAccessibility() {
+        let trusted = Permissions.accessibilityTrusted(prompt: false)
+        if trusted {
+            let armed = hotkey.start() // idempotent; arms only if not already armed
+            if !lastTrusted {
+                Log.write("accessibility OK — hotkey armed=\(armed)")
+                buildMenu()
+            }
+        } else if lastTrusted {
+            Log.write("accessibility LOST — hotkey disabled (macOS revoked the grant)")
+            hotkey.stop()
+            buildMenu()
+        }
+        lastTrusted = trusted
     }
 
     // MARK: - Dictation flow
 
+    /// Appends an operation to the serial chain so press/release are always
+    /// processed strictly in order — never overlapping.
+    private func enqueue(_ op: @MainActor @escaping () async -> Void) {
+        let previous = opChain
+        opChain = Task { @MainActor in
+            await previous.value
+            await op()
+        }
+    }
+
     private func beginDictation() {
-        guard !isBusy else { return }
-        isBusy = true
-        Task {
+        Log.write("press")
+        enqueue { [weak self] in
+            guard let self else { return }
             do {
-                try await engine.startListening()
+                try await self.engine.startListening()
             } catch {
                 Log.write("startListening error: \(error.localizedDescription)")
-                isBusy = false
-                updateIcon(.idle)
+                self.updateIcon(.idle)
                 NSSound.beep()
             }
         }
     }
 
     private func endDictation() {
-        guard isBusy else { return }
-        Task {
-            let text = await engine.stopAndTranscribe()
-            isBusy = false
+        enqueue { [weak self] in
+            guard let self else { return }
+            let text = await self.engine.stopAndTranscribe()
+            Log.write("release → \(text.count) chars")
             if text.isEmpty {
                 NSSound.beep()
             } else {
