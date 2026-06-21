@@ -28,6 +28,7 @@ final class DictationEngine {
     // orphaning the engine in a stuck state.
     private var sessionToken = 0
     private var preparing = false
+    private var listeningStartedAt = 0.0  // CFAbsoluteTime, set when state → .listening
 
     private func setState(_ newState: State) {
         state = newState
@@ -93,6 +94,7 @@ final class DictationEngine {
         }
 
         try startAudioCapture(analyzerFormat: analyzerFormat)
+        listeningStartedAt = CFAbsoluteTimeGetCurrent()
         setState(.listening)
         Log.write("eng: listening")
     }
@@ -172,6 +174,16 @@ final class DictationEngine {
             return ""
         }
         guard state == .listening else { return "" }
+
+        // Accidental tap (< 0.3 s) — Apple's finalizeAndFinishThroughEndOfInput() can
+        // hang on a nearly-empty session. Skip it entirely; forceReset is synchronous.
+        let recordingDuration = CFAbsoluteTimeGetCurrent() - listeningStartedAt
+        if recordingDuration < 0.3 {
+            Log.write("eng: too short (\(String(format: "%.2f", recordingDuration))s) — discarding")
+            forceReset()
+            return ""
+        }
+
         setState(.transcribing)
 
         audioEngine.inputNode.removeTap(onBus: 0)
@@ -201,15 +213,26 @@ final class DictationEngine {
         return text
     }
 
-    /// Runs `op`, returning true if it completed within `seconds`, false on
-    /// timeout. A timed-out op is abandoned (it can't block anything further).
+    /// Runs `op`, returning true if it completed within `seconds`, false on timeout.
+    ///
+    /// Uses two *unstructured* Tasks so the winner resumes the continuation immediately
+    /// without waiting for the loser — critical because Apple's SpeechAnalyzer APIs
+    /// don't always respect Swift Task cancellation, and `withTaskGroup` would block
+    /// until ALL child tasks finish (making the timeout meaningless).
     private func withTimeout(_ seconds: Double, _ op: @escaping () async -> Void) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { await op(); return true }
-            group.addTask { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)); return false }
-            let finished = await group.next() ?? false
-            group.cancelAll()
-            return finished
+        await withCheckedContinuation { cont in
+            let gate = _Once()
+            let opTask = Task {
+                await op()
+                await gate.fire { cont.resume(returning: true) }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                await gate.fire {
+                    opTask.cancel() // best-effort signal; Apple API may not honour it
+                    cont.resume(returning: false)
+                }
+            }
         }
     }
 
@@ -285,5 +308,17 @@ final class DictationEngine {
             try await request.downloadAndInstall()
         }
         Log.write("model: ready \(target)")
+    }
+}
+
+/// One-shot gate: lets the first caller through and ignores subsequent ones.
+/// Used by `withTimeout` so two racing Tasks can share a single continuation
+/// without risking a double-resume crash.
+private actor _Once {
+    private var fired = false
+    func fire(block: @Sendable () -> Void) {
+        guard !fired else { return }
+        fired = true
+        block()
     }
 }
